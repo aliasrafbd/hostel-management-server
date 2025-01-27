@@ -1,6 +1,9 @@
 const express = require('express');
 const Stripe = require('stripe');
+
+const cookieParser = require('cookie-parser');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 
 const stripe = new Stripe('sk_test_51QjhL0FlTqzyqEh9aeZX7YkqOA4GSfxCkrUWO8M5JFVoO48ZmVRWoh3fdzbQqMb9YoAFzMFw3DThv8rAZSgjmC6w00qGhrLkPm'); // Replace with your Stripe Secret Key
 
@@ -13,10 +16,44 @@ const stripe = new Stripe('sk_test_51QjhL0FlTqzyqEh9aeZX7YkqOA4GSfxCkrUWO8M5JFVo
 
 require('dotenv').config();
 const app = express();
+// Middleware to parse cookies
+app.use(cookieParser());
+
 const port = process.env.PORT || 5000;
 
-app.use(cors());
+app.use(cors({
+    origin: 'http://localhost:5173', // Frontend URL
+    credentials: true
+}));
+
 app.use(express.json());
+
+
+
+
+
+const verifyToken = (req, res, next) => {
+    const token = req?.cookies?.token; // Retrieve token from cookies
+    console.log("Token in verifyToken:", token);
+
+    if (!token) {
+        return res.status(401).json({ message: "Unauthorized Access: No Token" });
+    }
+
+    jwt.verify(token, process.env.JWT_TOKEN_SECRET_KEY, (err, decoded) => {
+        if (err) {
+            console.error("JWT verification error:", err);
+            return res.status(403).json({ message: "Unauthorized Access: Invalid Token" });
+        }
+
+        req.tokenOwnerEmail = decoded.email; // Extract email from token payload
+        console.log("Token owner email:", req.tokenOwnerEmail);
+        next();
+    });
+};
+
+
+
 
 
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
@@ -25,7 +62,7 @@ const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster
 const client = new MongoClient(uri, {
     serverApi: {
         version: ServerApiVersion.v1,
-        strict: true,
+        strict: false, // Disable strict API mode
         deprecationErrors: true,
     }
 });
@@ -45,8 +82,199 @@ async function run() {
         const paymentCollection = client.db('hostelDB').collection('packagepaymentdata');
 
 
-        // Stripe Payment Related API 
+        // Create a text index on the upcomingMealsCollection
+        await upcomingMealsCollection.createIndex({
+            title: "text",
+            category: "text",
+            ingredients: "text",
+            description: "text",
+            distributorName: "text",
+            distributorEmail: "text",
+        });
 
+
+        await mealsCollection.createIndex({
+            title: "text",
+            category: "text",
+            ingredients: "text",
+            description: "text",
+            distributorName: "text",
+            distributorEmail: "text"
+        });
+
+
+        app.get('/reviews', async (req, res) => {
+            console.log(req.query);
+
+            const page = parseInt(req.query.page);
+            const size = parseInt(req.query.size);
+            console.log(page, size);
+            const result = await mealsCollection.find()
+                .skip((page-1) * size)
+                .limit(size)
+                .toArray();
+            res.send(result);
+        })
+
+        app.get('/upcomingmealsall', async (req, res) => {
+            const result = await upcomingMealsCollection.find().toArray();
+            res.send(result);
+        })
+
+        app.put('/meals/:id', async (req, res) => {
+
+            const id = req.params.id;
+            const filter = { _id: new ObjectId(id) };
+            const options = { upsert: false };
+            const updatedMealData = req.body;
+            const newMealData = {
+                $set: {
+                    title: updatedMealData.title,
+                    category: updatedMealData.category,
+                    ingredients: updatedMealData.ingredients,
+                    description: updatedMealData.description,
+                    price: updatedMealData.price,
+                    image: updatedMealData.image,
+                    postTime: updatedMealData.postTime,
+                    distributorEmail: updatedMealData.distributorEmail,
+                    distributorName: updatedMealData.distributorName,
+                }
+            }
+            const result = await mealsCollection.updateOne(filter, newMealData, options)
+            res.send(result);
+        })
+
+
+        app.get('/meals/hostel', async (req, res) => {
+            const { search } = req.query; // Get the search term from the query parameters
+            try {
+                let query = {};
+
+                // If there's a search term, construct a query
+                if (search) {
+                    const searchTerm = search.toLowerCase(); // Convert search term to lowercase
+                    query = {
+                        $or: [
+                            { title: { $regex: searchTerm, $options: 'i' } }, // Match title (case insensitive)
+                            { category: { $regex: searchTerm, $options: 'i' } }, // Match category
+                            { description: { $regex: searchTerm, $options: 'i' } }, // Match description
+                            { ingredients: { $regex: searchTerm, $options: 'i' } }, // Match ingredients
+                            { price: { $regex: searchTerm, $options: 'i' } }, // Match price (if it's a string)
+                            { postTime: { $regex: searchTerm, $options: 'i' } }, // Match postTime (if it's a string)
+                        ],
+                    };
+                }
+
+                const result = await mealsCollection.find(query).toArray(); // Use the constructed query
+                res.send(result);
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+
+
+
+        app.put('/update-requested-meals', async (req, res) => {
+            try {
+                const updatedMeals = req.body; // Expect an array of updated meals
+                // Perform the update logic in MongoDB here
+                console.log(updatedMeals);
+                const result = await mealsCollection.updateMany(
+                    { userEmail: updatedMeals[0].userEmail }, // Match by userEmail or other criteria
+                    { $set: { meals: updatedMeals } } // Update the meals array
+                );
+                res.status(200).send({ success: true, message: 'Meals updated successfully', result });
+            } catch (error) {
+                res.status(500).send({ success: false, message: error.message });
+            }
+        });
+
+
+
+
+        app.get('/meals/search', async (req, res) => {
+            try {
+                const searchQuery = req.query.q; // Get the search term from the query string
+                console.log(searchQuery);
+                const results = await mealsCollection
+                    .find({
+                        $text: { $search: searchQuery } // Perform a text search
+                    })
+                    .toArray();
+
+                res.json(results); // Return the results as JSON
+            } catch (error) {
+                console.error("Error during search:", error);
+                res.status(500).json({ message: "Internal server error" });
+            }
+        });
+
+        // use verify admin after verifyToken
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.tokenOwnerEmail;
+            console.log("token owner email from verifyadmin", email);
+            let query = {};
+            if (email) {
+                query = { email: email };
+            }
+            const user = await userCollection.findOne(query);
+            const isAdmin = user?.role === 'admin';
+            if (!isAdmin) {
+                return res.status(403).send({ message: 'forbidden access: You are not admin' });
+            }
+            next();
+        }
+
+        // JWT Related API 
+        app.post('/jwt', (req, res) => {
+            const user = req.body;
+
+            const token = jwt.sign(user, process.env.JWT_TOKEN_SECRET_KEY, { expiresIn: '5h' });
+
+            console.log("in app post jwt", req?.cookies?.token);
+            // res.
+            //     cookie('token', token, {
+            //         httpOnly: true,
+            //         secure: false
+            //     })
+            //     .send({ success: true })
+
+            // console.log("jwt token", req?.cookies?.token);
+            res
+                .cookie('token', token, {
+                    httpOnly: true, // Prevents JavaScript from accessing the token
+                    maxAge: 3600 * 1000, // 1 hour expiry
+                    secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+                    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict', // Cross-site policy
+                })
+                .send({
+                    status: true,
+                })
+        })
+
+
+        app.post('/logout', (req, res) => {
+            // res
+            //     .clearCookie('token', {
+            //         httpOnly: true,
+            //         secure: false
+            //     })
+            //     .send({ success: true })
+
+            res
+                .clearCookie('token', {
+                    maxAge: 0,
+                    secure: process.env.NODE_ENV === 'production' ? true : false,
+                    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+                })
+                .send({ status: true })
+
+
+        })
+
+
+        // Stripe Payment Related API 
         // Create Payment Intent
         // Route to create payment intent
         // Endpoint to create a PaymentIntent
@@ -90,8 +318,13 @@ async function run() {
         });
 
 
-        app.get('/payments/:email', async (req, res) => {
+        app.get('/payments/:email', verifyToken, async (req, res) => {
             const userEmail = req.params.email;
+            console.log("userEmail from payment", userEmail);
+
+            if (req?.tokenOwnerEmail !== userEmail) {
+                return res.status(403).json({ message: "Forbidden Access: Email not matched" });
+            }
 
             try {
                 const payments = await paymentCollection.find({ userEmail }).toArray();
@@ -109,12 +342,6 @@ async function run() {
                 res.status(500).send({ message: 'Failed to fetch payments', error: error.message });
             }
         });
-
-
-
-
-
-
 
 
         app.get('/meals', async (req, res) => {
@@ -178,40 +405,144 @@ async function run() {
             }
         });
 
-
-
         // Temporary route for manual debugging
-        app.get('/mealssorted', async (req, res) => {
+        // Route to fetch sorted meals
+        app.get('/mealssorted', verifyToken, verifyAdmin, async (req, res) => {
             try {
                 // Extract the sort parameter from the query string
                 const { sort } = req.query;
-                console.log(sort);
+                const page = parseInt(req.query.page);
+                const size = parseInt(req.query.size);
 
                 // Define sorting options
                 const sortOptions = {
-                    reaction: { "reaction.count": -1 }, // Sort by reaction.count (descending)
-                    rating: { rating: -1 }, // Sort by rating (descending)
+                    reaction: { "reaction.count": -1 }, // Sort by reaction count (descending)
+                    reviews: { "reviews.review_count": -1 }, // Sort by review count (descending)
                 };
 
-                // Determine the sort criteria based on the provided parameter
-                const sortCriteria = sortOptions[sort] || {};
+                // Validate and select the sorting criteria
+                const sortCriteria = sortOptions[sort] || {}; // Default to no sorting if invalid
 
-                // Query the meals collection with the sorting criteria
-                const meals = await mealsCollection.find().sort(sortCriteria).toArray();
+                // Query the meals collection with the determined sorting criteria
+                const meals = await mealsCollection.find()
+                    .sort(sortCriteria)
+                    .skip(page * size)
+                    .limit(size)
+                    .toArray();
 
-                // Send the sorted meals as the response
+                // Send the sorted meals as a response
                 res.status(200).json(meals);
             } catch (error) {
-                console.error('Error while fetching meals:', error);
-                res.status(500).json({ error: 'Failed to fetch meals' });
+                console.error('Error fetching sorted meals:', error);
+                res.status(500).json({ error: 'Failed to fetch sorted meals' });
             }
         });
 
 
-        app.get('/admin-data', async (req, res) => {
+        app.get('/servedmeals', async (req, res) => {
+            try {
+                const page = parseInt(req.query.page) || 1; // Default page 1
+                const size = parseInt(req.query.size) || 10; // Default 10 items per page
+                const name = req.query.name || ""; // Search by name
+                const userEmail = req.query.userEmail || ""; // Search by email
+        
+                // Create a dynamic search query
+                const searchQuery = {};
+        
+                if (name) {
+                    searchQuery.name = { $regex: name, $options: "i" }; // Case-insensitive title search
+                }
+        
+                if (userEmail) {
+                    searchQuery.userEmail = { $regex: userEmail, $options: "i" }; // Case-insensitive email search
+                }
+        
+                const meals = await requestedMealsCollection
+                    .find(searchQuery)
+                    .skip((page - 1) * size)
+                    .limit(size)
+                    .toArray();
+        
+                const totalCount = await requestedMealsCollection.countDocuments(searchQuery); // Count total results
+        
+                res.send({
+                    meals,
+                    totalCount,
+                });
+            } catch (error) {
+                console.error("Error fetching served meals:", error);
+                res.status(500).send({ error: "Failed to fetch meals." });
+            }
+        });
+        
+        
+
+        // pagination related api in serve meal 
+        app.get('/servemealscount', async (req, res) => {
+            const count = await requestedMealsCollection.estimatedDocumentCount();
+            res.send({ count })
+        })
+
+        // pagination related api in all meals 
+        app.get('/mealscount', async (req, res) => {
+            const count = await mealsCollection.estimatedDocumentCount();
+            res.send({ count })
+        })
+
+        // pagination related api in all meals 
+        app.get('/upcomingmealscount', async (req, res) => {
+            const count = await upcomingMealsCollection.estimatedDocumentCount();
+            res.send({ count })
+        })
+
+        // Endpoint to update likes of upcoming meals
+        app.put('/upcomingmeals/:mealId/like', async (req, res) => {
+            const { mealId } = req.params;
+            const { userEmail } = req.body; // Get userEmail from request body
+
+            try {
+                const meal = await upcomingMealsCollection.findOne({ _id: new ObjectId(mealId) });
+
+                if (!meal) {
+                    return res.status(404).json({ message: 'Meal not found' });
+                }
+
+                // Check if the user has already liked the meal
+                if (meal.reaction?.userEmails?.includes(userEmail)) {
+                    return res.status(400).json({ message: 'User has already liked this meal' });
+                }
+
+                // Update the reaction count and add the user's email to the reaction list
+                const updatedReaction = {
+                    count: (meal.reaction?.count || 0) + 1,
+                    userEmails: [...(meal.reaction?.userEmails || []), userEmail],
+                };
+
+                await upcomingMealsCollection.updateOne(
+                    { _id: new ObjectId(mealId) },
+                    { $set: { reaction: updatedReaction } }
+                );
+
+                res.status(200).json({ message: 'Meal liked successfully', reaction: updatedReaction });
+
+            } catch (error) {
+                console.error(error);
+                res.status(500).json({ message: 'Server error' });
+            }
+        });
+
+
+
+
+        app.get('/admin-data', verifyToken, verifyAdmin, async (req, res) => {
             try {
                 // Extract adminEmail from the query parameters
                 const adminEmail = req.query.adminEmail;
+
+                console.log("current admin email", adminEmail);
+                if (req?.tokenOwnerEmail !== adminEmail) {
+                    return res.status(403).json({ message: "Forbidden Access: Email not matched" });
+                }
 
                 if (!adminEmail) {
                     return res.status(400).json({ error: 'adminEmail is required' });
@@ -241,7 +572,7 @@ async function run() {
             }
         });
 
-        app.post('/meals', async (req, res) => {
+        app.post('/meals', verifyToken, verifyAdmin, async (req, res) => {
             const meal = req.body;
             console.log(meal);
             const result = await mealsCollection.insertOne(meal);
@@ -326,10 +657,25 @@ async function run() {
             }
         });
 
+
         app.get('/upcomingmeals', async (req, res) => {
-            const result = await upcomingMealsCollection.find().toArray();
-            res.send(result);
-        })
+            const page = parseInt(req.query.page) || 0; // Default to 0 if not provided
+            const size = parseInt(req.query.size) || 10; // Default to 10 if not provided
+
+            try {
+                const result = await upcomingMealsCollection
+                    .find()
+                    .skip(page * size)
+                    .limit(size)
+                    .toArray();
+
+                res.send(result);
+            } catch (error) {
+                console.error("Error fetching upcoming meals:", error);
+                res.status(500).send({ error: "Failed to fetch meals" });
+            }
+        });
+
 
 
         // Route to insert new meals
@@ -386,8 +732,12 @@ async function run() {
             }
         });
 
-        app.get('/requestedmeals/:email', async (req, res) => {
+        app.get('/requestedmeals/:email', verifyToken, async (req, res) => {
             const userEmail = req.params.email;
+
+            if (req?.tokenOwnerEmail !== userEmail) {
+                return res.status(403).json({ message: "Forbidden Access: Email not matched" });
+            }
 
             try {
                 const requestedMeals = await requestedMealsCollection.find({ userEmail }).toArray();
@@ -453,14 +803,37 @@ async function run() {
             res.send(result);
         })
 
-        app.get('/users', async (req, res) => {
-            const result = await userCollection.find().toArray();
-            res.send(result);
-        })
 
 
-        app.get('/users/email/:email', async (req, res) => {
+        app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
+            const { name, email } = req.query;
+
+            try {
+                const query = {};
+                if (name) {
+                    query.name = { $regex: name, $options: 'i' }; // Case-insensitive search
+                }
+                if (email) {
+                    query.email = { $regex: email, $options: 'i' }; // Case-insensitive search
+                }
+
+                const result = await userCollection.find(query).toArray();
+                res.send(result);
+            } catch (error) {
+                console.error('Error fetching users:', error);
+                res.status(500).send({ message: 'Failed to fetch users', error: error.message });
+            }
+        });
+
+
+
+        app.get('/users/email/:email', verifyToken, async (req, res) => {
             const email = req.params.email;
+
+            if (req?.tokenOwnerEmail !== email) {
+                return res.status(403).json({ message: "Forbidden Access: Email not matched" });
+            }
+
             try {
                 const result = await userCollection.findOne({ email: email });
                 if (!result) {
@@ -475,10 +848,19 @@ async function run() {
 
         app.get('/meal/:id', async (req, res) => {
             const id = req.params.id;
-            const query = { _id: new ObjectId(id) };
-            const result = await mealsCollection.findOne(query);
-            res.send(result);
-        })
+            console.log('Received ID:', id); // Log the received ID
+          
+            try {
+              const query = { _id: new ObjectId(id) };
+              const result = await mealsCollection.findOne(query);
+              console.log('Query Result:', result); // Log the result
+              res.send(result);
+            } catch (error) {
+              console.error('Error fetching meal:', error);
+              res.status(500).send({ error: 'Error fetching meal' });
+            }
+          });
+          
 
         app.get('/user/admin/:email', async (req, res) => {
             const email = req.params.email;
@@ -503,11 +885,12 @@ async function run() {
             // }
             const query = { email: email };
             const user = await userCollection.findOne(query);
+            console.log(user?.badge);
             let premiumMember = false;
-            if (user) {
-                premiumMember = (user?.badge === 'Silver' ? true : false) || (user?.badge === 'Gold' ? true : false) || (user?.badge === 'Platinum' ? true : false);
+            if (user?.badge === "Gold" || user?.badge === "Silver" || user?.badge === "Platinum") {
+                premiumMember = true;
             }
-            res.send({ premiumMember });
+            res.send(premiumMember);
         })
 
         app.put('/meals/:mealId/like', async (req, res) => {
@@ -550,7 +933,7 @@ async function run() {
         // API endpoint to update reviews and review_count for a specific meal
         app.put('/api/update-review/:mealId', async (req, res) => {
             const mealId = req.params.mealId;  // Get mealId from the URL parameter
-            const { review, userEmail } = req.body;  // Get the review text from the request body
+            const { review, userEmail, name } = req.body;  // Get the review text from the request body
 
             console.log(mealId, review);
 
@@ -562,6 +945,7 @@ async function run() {
             const newReview = {
                 review: review,
                 userEmail: userEmail,
+                name: name,
                 createdAt: new Date(),  // Store the creation date of the review
             };
 
@@ -573,8 +957,6 @@ async function run() {
                     $inc: { "reviews.review_count": 1 },      // Increment the review_count by 1
                 }
             );
-
-            console.log(result);
 
             res.send(result);
 
@@ -593,30 +975,44 @@ async function run() {
 
 
 
-        app.get('/reviews/:email', async (req, res) => {
+        app.get('/reviews/:email', verifyToken, async (req, res) => {
             const userEmail = req.params.email;
-            console.log(userEmail);
 
-            // Fetch all documents that have reviews
-            const meals = await mealsCollection.find({}).toArray();
+            if (req?.tokenOwnerEmail !== userEmail) {
+                return res.status(403).json({ message: "Forbidden Access: Email not matched" });
+            }
 
-            // Extract reviews for the specified email
-            const filteredReviews = [];
-            meals.forEach(meal => {
-                if (meal.reviews && Array.isArray(meal.reviews.reviews)) {
-                    const userReviews = meal.reviews.reviews.filter(
-                        review => review.userEmail === userEmail
-                    );
-                    filteredReviews.push(...userReviews);
+            try {
+                // Fetch all meals
+                const meals = await mealsCollection.find({}).toArray();
+
+                // Extract reviews for the specified email and include meal _id
+                const filteredReviews = [];
+                meals.forEach(meal => {
+                    if (meal.reviews && Array.isArray(meal.reviews.reviews)) {
+                        const userReviews = meal.reviews.reviews
+                            .filter(review => review.userEmail === userEmail)
+                            .map(review => ({
+                                ...review,
+                                _id: meal._id, // Add meal _id to the review
+                                mealTitle: meal.title // Add meal _id to the review
+                            }));
+                        filteredReviews.push(...userReviews);
+                    }
+                });
+
+                // Send the filtered reviews
+                if (filteredReviews.length > 0) {
+                    res.send(filteredReviews);
+                } else {
+                    res.send([]);
                 }
-            });
-
-            if (filteredReviews.length > 0) {
-                res.send(filteredReviews); // Send the filtered reviews as the response
-            } else {
-                res.send([]); // Send an empty array if no reviews are found
+            } catch (error) {
+                console.error('Error fetching reviews:', error);
+                res.status(500).json({ message: 'Failed to fetch reviews', error: error.message });
             }
         });
+
 
 
 
@@ -664,14 +1060,14 @@ async function run() {
 
         app.patch('/meals/:id/rating', async (req, res) => {
             const { id } = req.params;
-            console.log(req.body);
+            console.log("rating", req.body);
             const { newRating } = req.body; // Expecting newRating in the request body
             console.log(newRating);
 
             try {
                 const updatedMeal = await mealsCollection.updateOne(
                     { _id: new ObjectId(id) },
-                    { $set: { rating: newRating } }
+                    { $set: { rating: parseFloat(newRating) } }
                 );
                 res.status(200).json(updatedMeal);
             } catch (error) {

@@ -4,15 +4,9 @@ const Stripe = require('stripe');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
+process.env.STRIPE_PAYMENT_SECRET_KEY
+const stripe = new Stripe(`${process.env.STRIPE_PAYMENT_SECRET_KEY}`); 
 
-const stripe = new Stripe('sk_test_51QjhL0FlTqzyqEh9aeZX7YkqOA4GSfxCkrUWO8M5JFVoO48ZmVRWoh3fdzbQqMb9YoAFzMFw3DThv8rAZSgjmC6w00qGhrLkPm'); // Replace with your Stripe Secret Key
-
-// const bodyParser = require('body-parser');
-
-// const bodyParser = require('body-parser');
-
-// Middleware
-// app.use(bodyParser.json());
 
 require('dotenv').config();
 const app = express();

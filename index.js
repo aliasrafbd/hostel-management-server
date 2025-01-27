@@ -110,7 +110,7 @@ async function run() {
             const size = parseInt(req.query.size);
             console.log(page, size);
             const result = await mealsCollection.find()
-                .skip((page-1) * size)
+                .skip((page - 1) * size)
                 .limit(size)
                 .toArray();
             res.send(result);
@@ -252,7 +252,6 @@ async function run() {
                     status: true,
                 })
         })
-
 
         app.post('/logout', (req, res) => {
             // res
@@ -445,26 +444,26 @@ async function run() {
                 const size = parseInt(req.query.size) || 10; // Default 10 items per page
                 const name = req.query.name || ""; // Search by name
                 const userEmail = req.query.userEmail || ""; // Search by email
-        
+
                 // Create a dynamic search query
                 const searchQuery = {};
-        
+
                 if (name) {
                     searchQuery.name = { $regex: name, $options: "i" }; // Case-insensitive title search
                 }
-        
+
                 if (userEmail) {
                     searchQuery.userEmail = { $regex: userEmail, $options: "i" }; // Case-insensitive email search
                 }
-        
+
                 const meals = await requestedMealsCollection
                     .find(searchQuery)
                     .skip((page - 1) * size)
                     .limit(size)
                     .toArray();
-        
+
                 const totalCount = await requestedMealsCollection.countDocuments(searchQuery); // Count total results
-        
+
                 res.send({
                     meals,
                     totalCount,
@@ -474,8 +473,8 @@ async function run() {
                 res.status(500).send({ error: "Failed to fetch meals." });
             }
         });
-        
-        
+
+
 
         // pagination related api in serve meal 
         app.get('/servemealscount', async (req, res) => {
@@ -571,6 +570,32 @@ async function run() {
                 res.status(500).send({ message: "Failed to remove this meal" });
             }
         });
+
+        app.put('/mealssorted/:id/reviews', async (req, res) => {
+            const { id } = req.params; // Meal ID
+            const { review_count, reviews } = req.body; // Updated reviews object
+            try {
+                const result = await mealsCollection.updateOne(
+                    { _id: new ObjectId(id) }, // Find the meal by ID
+                    {
+                        $set: {
+                            "reviews.review_count": review_count, // Set review_count to 0
+                            "reviews.reviews": reviews, // Empty the reviews array
+                        },
+                    }
+                );
+                if (result.modifiedCount > 0) {
+                    res.status(200).send({ success: true, message: 'Reviews reset successfully' });
+                } else {
+                    res.status(404).send({ success: false, message: 'Meal not found' });
+                }
+            } catch (err) {
+                res.status(500).send({ success: false, message: 'Failed to reset reviews' });
+            }
+        });
+
+
+
 
         app.post('/meals', verifyToken, verifyAdmin, async (req, res) => {
             const meal = req.body;
@@ -849,18 +874,18 @@ async function run() {
         app.get('/meal/:id', async (req, res) => {
             const id = req.params.id;
             console.log('Received ID:', id); // Log the received ID
-          
+
             try {
-              const query = { _id: new ObjectId(id) };
-              const result = await mealsCollection.findOne(query);
-              console.log('Query Result:', result); // Log the result
-              res.send(result);
+                const query = { _id: new ObjectId(id) };
+                const result = await mealsCollection.findOne(query);
+                console.log('Query Result:', result); // Log the result
+                res.send(result);
             } catch (error) {
-              console.error('Error fetching meal:', error);
-              res.status(500).send({ error: 'Error fetching meal' });
+                console.error('Error fetching meal:', error);
+                res.status(500).send({ error: 'Error fetching meal' });
             }
-          });
-          
+        });
+
 
         app.get('/user/admin/:email', async (req, res) => {
             const email = req.params.email;

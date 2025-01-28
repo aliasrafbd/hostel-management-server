@@ -1,7 +1,7 @@
 
 <div align="center">
 
-# Welcome to my Project 12 (Client Side) (Assignment_Category_14) 
+# Welcome to my Project 12 (Server Side) (Assignment_Category_14) 
 
 </div>
 
@@ -10,8 +10,8 @@
 
 
 2. **Admin Info** <br>
-   Admin Email: aliasrafchakoria@gmail.com
-   Admin Name: Ali Asraf
+   Admin Email: aliasrafchakoria@gmail.com <br>
+   Admin Name: Ali Asraf <br>
    Password: 123456
 
 

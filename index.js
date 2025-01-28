@@ -14,7 +14,7 @@ app.use(cookieParser());
 const port = process.env.PORT || 5000;
 
 app.use(cors({
-    origin: 'http://localhost:5173',
+    origin: 'https://food-sharing-26-12-24.netlify.app',
     credentials: true
 }));
 

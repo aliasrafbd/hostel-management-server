@@ -8,13 +8,16 @@
 1. **Name of the Website** <br>
    Hostel Management System
 
+
 2. **Admin Info** <br>
-   Admin Email: aliasrafpowergrid@gmail.com
-   Admin Name: Asraf Ali
+   Admin Email: aliasrafchakoria@gmail.com
+   Admin Name: Ali Asraf
    Password: 123456
 
+
 3. **Live URL** <br>
-   [https://food-sharing-26-12-24.netlify.app/](https://food-sharing-26-12-24.netlify.app/)
+   [https://hostel-management-28-01-24.netlify.app/](https://hostel-management-28-01-24.netlify.app/)
+
 
 4. **Key Features of my Project:**
    - User can Register/Login.

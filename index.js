@@ -1,14 +1,13 @@
 const express = require('express');
-const Stripe = require('stripe');
 
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-process.env.STRIPE_PAYMENT_SECRET_KEY
-const stripe = new Stripe(`${process.env.STRIPE_PAYMENT_SECRET_KEY}`); 
-
-
 require('dotenv').config();
+
+const stripe = require('stripe')(process.env.STRIPE_PAYMENT_SECRET_KEY);
+// const stripe = new Stripe('sk_test_51QjhL0FlTqzyqEh9aeZX7YkqOA4GSfxCkrUWO8M5JFVoO48ZmVRWoh3fdzbQqMb9YoAFzMFw3DThv8rAZSgjmC6w00qGhrLkPm'); // Replace with your Stripe Secret Key
+
 const app = express();
 // Middleware to parse cookies
 app.use(cookieParser());
@@ -16,14 +15,11 @@ app.use(cookieParser());
 const port = process.env.PORT || 5000;
 
 app.use(cors({
-    origin: 'http://localhost:5173', // Frontend URL
+    origin: 'http://localhost:5173',
     credentials: true
 }));
 
 app.use(express.json());
-
-
-
 
 
 const verifyToken = (req, res, next) => {
@@ -46,10 +42,6 @@ const verifyToken = (req, res, next) => {
     });
 };
 
-
-
-
-
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.sa1jr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -64,8 +56,8 @@ const client = new MongoClient(uri, {
 async function run() {
     try {
         // Send a ping to confirm a successful connection
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
 
         const mealsCollection = client.db('hostelDB').collection('meals');
@@ -74,6 +66,23 @@ async function run() {
         const servedMealsCollection = client.db('hostelDB').collection('servedmeals');
         const userCollection = client.db('hostelDB').collection('users');
         const paymentCollection = client.db('hostelDB').collection('packagepaymentdata');
+
+
+        // use verify admin after verifyToken
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.tokenOwnerEmail;
+            console.log("token owner email from verifyadmin", email);
+            let query = {};
+            if (email) {
+                query = { email: email };
+            }
+            const user = await userCollection.findOne(query);
+            const isAdmin = user?.role === 'admin';
+            if (!isAdmin) {
+                return res.status(403).send({ message: 'forbidden access: You are not admin' });
+            }
+            next();
+        }
 
 
         // Create a text index on the upcomingMealsCollection
@@ -97,7 +106,7 @@ async function run() {
         });
 
 
-        app.get('/reviews', async (req, res) => {
+        app.get('/reviews', verifyToken, verifyAdmin, async (req, res) => {
             console.log(req.query);
 
             const page = parseInt(req.query.page);
@@ -110,12 +119,35 @@ async function run() {
             res.send(result);
         })
 
-        app.get('/upcomingmealsall', async (req, res) => {
+
+
+        app.patch("/servedmeals/:id", verifyToken, verifyAdmin, async (req, res) => {
+            const { id } = req.params;
+            const { status } = req.body;
+
+            try {
+                const result = await requestedMealsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status } }
+                );
+
+                if (result.modifiedCount > 0) {
+                    res.status(200).send({ message: "Meal status updated successfully." });
+                } else {
+                    res.status(404).send({ message: "Meal not found or already updated." });
+                }
+            } catch (error) {
+                res.status(500).send({ message: "Error updating meal status.", error });
+            }
+        });
+
+
+        app.get('/upcomingmealsall', verifyToken, async (req, res) => {
             const result = await upcomingMealsCollection.find().toArray();
             res.send(result);
         })
 
-        app.put('/meals/:id', async (req, res) => {
+        app.put('/meals/:id', verifyToken, verifyAdmin, async (req, res) => {
 
             const id = req.params.id;
             const filter = { _id: new ObjectId(id) };
@@ -137,7 +169,6 @@ async function run() {
             const result = await mealsCollection.updateOne(filter, newMealData, options)
             res.send(result);
         })
-
 
         app.get('/meals/hostel', async (req, res) => {
             const { search } = req.query; // Get the search term from the query parameters
@@ -204,21 +235,7 @@ async function run() {
             }
         });
 
-        // use verify admin after verifyToken
-        const verifyAdmin = async (req, res, next) => {
-            const email = req.tokenOwnerEmail;
-            console.log("token owner email from verifyadmin", email);
-            let query = {};
-            if (email) {
-                query = { email: email };
-            }
-            const user = await userCollection.findOne(query);
-            const isAdmin = user?.role === 'admin';
-            if (!isAdmin) {
-                return res.status(403).send({ message: 'forbidden access: You are not admin' });
-            }
-            next();
-        }
+
 
         // JWT Related API 
         app.post('/jwt', (req, res) => {
@@ -432,7 +449,7 @@ async function run() {
         });
 
 
-        app.get('/servedmeals', async (req, res) => {
+        app.get('/servedmeals', verifyToken, verifyAdmin, async (req, res) => {
             try {
                 const page = parseInt(req.query.page) || 1; // Default page 1
                 const size = parseInt(req.query.size) || 10; // Default 10 items per page
@@ -469,6 +486,63 @@ async function run() {
         });
 
 
+        // Endpoint to delete a review by userEmail from a specific meal
+        app.delete('/meals/:mealId/reviews', async (req, res) => {
+            const { mealId } = req.params;
+            const { userEmail } = req.body;  // Get userEmail from request body
+
+            console.log(mealId, userEmail);
+
+            try {
+                // Convert mealId to ObjectId since MongoDB stores _id as ObjectId
+                const mealObjectId = new ObjectId(mealId);
+
+                // Find the meal by mealId
+                const meal = await mealsCollection.findOne({ _id: mealObjectId });
+
+                if (!meal) {
+                    return res.status(404).json({ message: 'Meal not found' });
+                }
+
+                // Find the index of the review by the userEmail
+                const reviewIndex = meal.reviews.reviews.findIndex(
+                    review => review.userEmail === userEmail
+                );
+
+                if (reviewIndex === -1) {
+                    return res.status(404).json({ message: 'Review not found for the given user' });
+                }
+
+                // Remove the review from the array
+                meal.reviews.reviews.splice(reviewIndex, 1);
+
+                // Update the review count
+                meal.reviews.review_count -= 1;
+
+                // Update the meal document with the modified reviews array and review_count
+                const updateResult = await mealsCollection.updateOne(
+                    { _id: mealObjectId },  // Find the meal by its ObjectId
+                    {
+                        $set: {
+                            "reviews.reviews": meal.reviews.reviews,  // Update the reviews array
+                            "reviews.review_count": meal.reviews.review_count  // Update the review count
+                        }
+                    }
+                );
+
+                if (updateResult.modifiedCount === 1) {
+                    return res.status(200).json({ message: 'Review deleted successfully' });
+                } else {
+                    return res.status(500).json({ message: 'Failed to update meal after deleting review' });
+                }
+
+            } catch (error) {
+                console.error(error);
+                return res.status(500).json({ message: 'Server error' });
+            }
+        });
+
+
 
         // pagination related api in serve meal 
         app.get('/servemealscount', async (req, res) => {
@@ -483,13 +557,13 @@ async function run() {
         })
 
         // pagination related api in all meals 
-        app.get('/upcomingmealscount', async (req, res) => {
+        app.get('/upcomingmealscount', verifyToken, async (req, res) => {
             const count = await upcomingMealsCollection.estimatedDocumentCount();
             res.send({ count })
         })
 
         // Endpoint to update likes of upcoming meals
-        app.put('/upcomingmeals/:mealId/like', async (req, res) => {
+        app.put('/upcomingmeals/:mealId/like', verifyToken, async (req, res) => {
             const { mealId } = req.params;
             const { userEmail } = req.body; // Get userEmail from request body
 
@@ -525,14 +599,12 @@ async function run() {
         });
 
 
-
-
         app.get('/admin-data', verifyToken, verifyAdmin, async (req, res) => {
             try {
                 // Extract adminEmail from the query parameters
                 const adminEmail = req.query.adminEmail;
 
-                console.log("current admin email", adminEmail);
+                console.log("current admin email", req?.tokenOwnerEmail, adminEmail);
                 if (req?.tokenOwnerEmail !== adminEmail) {
                     return res.status(403).json({ message: "Forbidden Access: Email not matched" });
                 }
@@ -541,10 +613,8 @@ async function run() {
                     return res.status(400).json({ error: 'adminEmail is required' });
                 }
 
-                // Count the number of meals added by this admin
                 const mealCount = await mealsCollection.countDocuments({ distributorEmail: adminEmail });
 
-                // Respond with the meal count
                 res.status(200).json({ mealCount });
             } catch (error) {
                 console.error('Error fetching meal count:', error);
@@ -565,16 +635,30 @@ async function run() {
             }
         });
 
+
+        app.delete('/requestedmeals/:id', verifyToken, async (req, res) => {
+            const id = req.params.id;
+            console.log(id);
+            try {
+                const query = { _id: new ObjectId(id) }
+                const result = await requestedMealsCollection.deleteOne(query);
+                res.send(result);
+            } catch (error) {
+                console.error("Error deleting the meal:", error);
+                res.status(500).send({ message: "Failed to remove this meal" });
+            }
+        });
+
         app.put('/mealssorted/:id/reviews', async (req, res) => {
             const { id } = req.params; // Meal ID
-            const { review_count, reviews } = req.body; // Updated reviews object
+            const { review_count, reviews } = req.body;
             try {
                 const result = await mealsCollection.updateOne(
-                    { _id: new ObjectId(id) }, // Find the meal by ID
+                    { _id: new ObjectId(id) },
                     {
                         $set: {
-                            "reviews.review_count": review_count, // Set review_count to 0
-                            "reviews.reviews": reviews, // Empty the reviews array
+                            "reviews.review_count": review_count,
+                            "reviews.reviews": reviews,
                         },
                     }
                 );
@@ -587,9 +671,6 @@ async function run() {
                 res.status(500).send({ success: false, message: 'Failed to reset reviews' });
             }
         });
-
-
-
 
         app.post('/meals', verifyToken, verifyAdmin, async (req, res) => {
             const meal = req.body;
@@ -627,7 +708,6 @@ async function run() {
                 badge = "Platinum";
             }
 
-            // Update the user's badge in the users collection
             const result = await userCollection.updateOne(
                 { email: userEmail },
                 { $set: { badge } }
@@ -650,7 +730,7 @@ async function run() {
             res.send(result);
         })
 
-        app.post('/publish-meal/:id', async (req, res) => {
+        app.post('/publish-meal/:id', verifyToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             console.log('Publish meal API hit, ID:', id); // Debug
 
@@ -677,7 +757,7 @@ async function run() {
         });
 
 
-        app.get('/upcomingmeals', async (req, res) => {
+        app.get('/upcomingmeals', verifyToken, async (req, res) => {
             const page = parseInt(req.query.page) || 0; // Default to 0 if not provided
             const size = parseInt(req.query.size) || 10; // Default to 10 if not provided
 
@@ -775,36 +855,6 @@ async function run() {
             }
         });
 
-        // app.get('/requestedmeals', async (req, res) => {
-        //     try {
-        //         const { name = "", userEmail = "" } = req.query;
-
-        //         console.log(name, userEmail);
-
-        //         // Build the query object
-        //         const query = {};
-        //         if (name) {
-        //             query.name = { $regex: name, $options: "i" }; // Case-insensitive partial match
-        //         }
-        //         if (userEmail) {
-        //             query.userEmail = userEmail;
-        //         }
-
-        //         // Fetch the requested meals based on the query
-        //         const meals = await requestedMealsCollection.find(query).toArray();
-
-        //         // Send the meals as the response
-        //         res.status(200).json(meals);
-        //     } catch (error) {
-        //         console.error('Error fetching requested meals:', error);
-        //         res.status(500).json({ error: 'Failed to fetch requested meals' });
-        //     }
-        // });
-
-        // app.get('/requestedmeals', async (req, res) => {
-        //     const result = await requestedMealsCollection.find().toArray();
-        //     res.send(result);
-        // })
 
         app.post('/requestedmeals', async (req, res) => {
             const meal = req.body;
@@ -821,7 +871,6 @@ async function run() {
             const result = await requestedMealsCollection.insertOne(meal);
             res.send(result);
         })
-
 
 
         app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
@@ -879,7 +928,6 @@ async function run() {
                 res.status(500).send({ error: 'Error fetching meal' });
             }
         });
-
 
         app.get('/user/admin/:email', async (req, res) => {
             const email = req.params.email;
@@ -979,17 +1027,6 @@ async function run() {
 
             res.send(result);
 
-            // // Fetch the updated meal document to return the updated reviews
-            // const updatedMeal = await mealsCollection.findOne({ _id: mealId });
-            // console.log(updatedMeal);
-
-            // if (updatedMeal) {
-            //     // Send the updated reviews and review_count in the response
-            //     return res.json(updatedMeal.reviews);
-            // } else {
-            //     return res.status(404).json({ error: 'Meal not found' });
-            // }
-            // return res.status(500).json({ error: 'An error occurred while posting the review' });
         });
 
 
@@ -1033,115 +1070,59 @@ async function run() {
         });
 
 
-
-
-        // for rating:
-
-        // Route to update the rating
-        // app.put('/meal/:id/rate', async (req, res) => {
-        //     const id = req.params.id;
-        //     const { rating } = req.body; // Rating provided by the user
-
-        //     try {
-        //         // Find the meal by its ID
-        //         const meal = await mealsCollection.findOne({ _id: new ObjectId(id) });
-
-        //         if (!meal) {
-        //             return res.status(404).send('Meal not found');
-        //         }
-
-        //         // Calculate the new average rating (this assumes the client is sending only a single rating for simplicity)
-        //         const totalRatings = [...meal.ratings, rating].reduce((sum, rate) => sum + rate, 0);
-        //         const averageRating = totalRatings / (meal.ratings.length + 1);
-
-        //         // Update the meal document with the new average rating
-        //         const updateResult = await mealsCollection.updateOne(
-        //             { _id: new ObjectId(id) },
-        //             {
-        //                 $set: {
-        //                     rating: averageRating, // Update the average rating field
-        //                 },
-        //                 $push: { ratings: rating }, // Add the new rating to the ratings array
-        //             }
-        //         );
-
-        //         if (updateResult.modifiedCount === 0) {
-        //             return res.status(500).send('Failed to update rating');
-        //         }
-
-        //         res.status(200).send('Rating updated successfully');
-        //     } catch (error) {
-        //         console.error('Error updating rating:', error);
-        //         res.status(500).send('Error updating rating');
-        //     }
-        // });
-
-
         app.patch('/meals/:id/rating', async (req, res) => {
             const { id } = req.params;
-            console.log("rating", req.body);
-            const { newRating } = req.body; // Expecting newRating in the request body
-            console.log(newRating);
+            let newRating = req.body.newUserRating;  // Expecting the new rating in the request body
 
-            try {
-                const updatedMeal = await mealsCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    { $set: { rating: parseFloat(newRating) } }
-                );
-                res.status(200).json(updatedMeal);
-            } catch (error) {
-                res.status(500).json({ error: error.message });
+            // Convert newRating to a number using parseFloat
+            newRating = parseFloat(newRating);
+
+            // Check if parsing the rating was successful (i.e., it's a valid number)
+            if (isNaN(newRating)) {
+                return res.status(400).json({ message: 'Invalid rating value' });
             }
+
+            // Fetch the meal by ID
+            const meal = await mealsCollection.findOne({ _id: new ObjectId(id) });
+            if (!meal) {
+                return res.status(404).json({ message: 'Meal not found' });
+            }
+
+            // Ensure that the current meal rating is a valid number
+            if (isNaN(meal.rating)) {
+                return res.status(400).json({ message: 'Meal rating is invalid' });
+            }
+
+            const oldAverage = meal.rating;
+
+            // Since we don't want to track the rating count, we only have the old average and the new rating
+            // Calculate the new average
+            const newAverage = (oldAverage + newRating) / 2;
+
+            // Update the meal document with the new average rating
+            const updateResult = await mealsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                {
+                    $set: {
+                        rating: newAverage,  // Directly set the new average rating
+                    }
+                }
+            );
+
+            if (updateResult.modifiedCount === 0) {
+                return res.status(400).json({ message: 'Failed to update the meal rating' });
+            }
+
+            // Fetch the updated meal to return the new rating information
+            const updatedMeal = await mealsCollection.findOne({ _id: new ObjectId(id) });
+            res.status(200).json(updatedMeal);
         });
 
-        // app.patch('/meals/:id/rating', async (req, res) => {
-        //     const { id } = req.params; // Get meal ID from URL
-        //     const { newRating, userEmail } = req.body; // Get newRating and userEmail from request body
-
-        //     // Validate input
-        //     if (!newRating || !userEmail) {
-        //         return res.status(400).json({ message: 'newRating and userEmail are required.' });
-        //     }
-
-        //     try {
-        //         const meal = await mealsCollection.findOne({ _id: new ObjectId(id) });
-
-        //         // Check if meal exists
-        //         if (!meal) {
-        //             return res.status(404).json({ message: 'Meal not found' });
-        //         }
-
-        //         // Initialize `rating` object if it doesn't exist
-        //         if (!meal.rating || typeof meal.rating !== 'object') {
-        //             meal.rating = { rating: newRating, userEmails: [] };
-        //         }
-
-        //         // Check if the user has already rated
-        //         if (meal.rating.userEmails.includes(userEmail)) {
-        //             return res.status(400).json({ message: 'User has already rated this meal' });
-        //         }
-
-        //         // Update the rating object
-        //         const updatedRating = {
-        //             rating: newRating, // Use the frontend-calculated rating
-        //             userEmails: [...meal.rating.userEmails, userEmail], // Add the user email to the list
-        //         };
-
-        //         // Update the document in the database
-        //         await mealsCollection.updateOne(
-        //             { _id: new ObjectId(id) },
-        //             { $set: { rating: updatedRating } }
-        //         );
-
-        //         res.status(200).json({ message: 'Rating updated successfully', updatedRating });
-        //     } catch (error) {
-        //         res.status(500).json({ error: error.message });
-        //     }
-        // });
 
 
 
-        app.delete('/users/:id', async (req, res) => {
+
+        app.delete('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) }
             const result = await userCollection.deleteOne(query);
@@ -1151,8 +1132,6 @@ async function run() {
         app.post('/users', async (req, res) => {
             const user = req.body;
 
-            // insert user if email doest not exist  
-            // many ways: email unique? upset? simple checking 
 
             const query = { email: user.email }
             const existingUser = await userCollection.findOne(query);
@@ -1164,26 +1143,7 @@ async function run() {
         })
 
 
-        // Route to fetch meals with search functionality
-        // app.get('/api/meals', async (req, res) => {
-        //     const search = req.query.search || ""; // Get the search term from query params
-        //         // Search meals across multiple fields
-        //         const meals = await mealsCollection
-        //             .find({
-        //                 $or: [
-        //                     { title: { $regex: search, $options: "i" } },
-        //                     { category: { $regex: search, $options: "i" } },
-        //                     { description: { $regex: search, $options: "i" } },
-        //                     { ingredients: { $regex: search, $options: "i" } },
-        //                     { postTime: { $regex: search, $options: "i" } },
-        //                     { price: { $regex: search, $options: "i" } },
-        //                 ],
-        //             })
-        //             .toArray();
-        //     });
-
-
-        app.patch('/users/admin/:id', async (req, res) => {
+        app.patch('/users/admin/:id', verifyToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const filter = { _id: new ObjectId(id) };
             const updatedDoc = {

@@ -14,7 +14,7 @@ app.use(cookieParser());
 const port = process.env.PORT || 5000;
 
 app.use(cors({
-    origin: 'https://food-sharing-26-12-24.netlify.app',
+    origin: ['https://hostel-management-28-01-24.netlify.app', 'http://localhost:5173'],
     credentials: true
 }));
 
@@ -23,7 +23,6 @@ app.use(express.json());
 
 const verifyToken = (req, res, next) => {
     const token = req?.cookies?.token; 
-    console.log("Token in verifyToken:", token);
 
     if (!token) {
         return res.status(401).json({ message: "Unauthorized Access: No Token" });
@@ -31,12 +30,10 @@ const verifyToken = (req, res, next) => {
 
     jwt.verify(token, process.env.JWT_TOKEN_SECRET_KEY, (err, decoded) => {
         if (err) {
-            console.error("JWT verification error:", err);
             return res.status(403).json({ message: "Unauthorized Access: Invalid Token" });
         }
 
         req.tokenOwnerEmail = decoded.email; // Extract email from token payload
-        console.log("Token owner email:", req.tokenOwnerEmail);
         next();
     });
 };
@@ -66,7 +63,6 @@ async function run() {
         // use verify admin after verifyToken
         const verifyAdmin = async (req, res, next) => {
             const email = req.tokenOwnerEmail;
-            console.log("token owner email from verifyadmin", email);
             let query = {};
             if (email) {
                 query = { email: email };
@@ -102,15 +98,59 @@ async function run() {
 
 
         app.get('/reviews', verifyToken, verifyAdmin, async (req, res) => {
-            console.log(req.query);
 
             const page = parseInt(req.query.page);
             const size = parseInt(req.query.size);
-            console.log(page, size);
             const result = await mealsCollection.find()
                 .skip((page - 1) * size)
                 .limit(size)
                 .toArray();
+            res.send(result);
+        })
+
+        app.get("/requestedmeals/:email", async (req, res) => {
+            const { email } = req.params;
+            try {
+                const meals = await requestedMealsCollection.find({ userEmail: email }).toArray();
+                res.json(meals);
+            } catch (error) {
+                res.status(500).json({ error: "Failed to fetch requested meals" });
+            }
+        });
+    
+
+        app.get("/overview-stats", async (req, res) => {
+            try {
+                const totalMeals = await mealsCollection.countDocuments();
+                const totalUsers = await userCollection.countDocuments();
+                const totalReviews = await mealsCollection.aggregate([{ $group: { _id: null, total: { $sum: "$reviews.review_count" } } }]).toArray();
+        
+                const categoryStats = await mealsCollection.aggregate([
+                    { $group: { _id: "$category", count: { $sum: 1 } } },
+                    { $project: { _id: 0, category: "$_id", count: 1 } }
+                ]).toArray();
+        
+                const reactionStats = await mealsCollection.aggregate([
+                    { $group: { _id: "$reaction.count", count: { $sum: 1 } } },
+                    { $project: { _id: 0, count: 1, label: { $concat: ["Reactions: ", { $toString: "$_id" }] } } }
+                ]).toArray();
+        
+                res.json({
+                    totalMeals,
+                    totalUsers,
+                    totalReviews: totalReviews[0]?.total || 0,
+                    categoryStats,
+                    reactionStats
+                });
+            } catch (error) {
+                res.status(500).json({ error: "Failed to fetch overview stats" });
+            }
+        });
+        
+
+
+        app.get('/allreviews', verifyToken, async (req, res) => {
+            const result = await mealsCollection.find().limit(10).toArray();
             res.send(result);
         })
 
@@ -187,17 +227,13 @@ async function run() {
                 const result = await mealsCollection.find(query).toArray(); 
                 res.send(result);
             } catch (error) {
-                console.error(error);
                 res.status(500).send({ message: 'Internal Server Error' });
             }
         });
 
-
-
         app.put('/update-requested-meals', async (req, res) => {
             try {
                 const updatedMeals = req.body; 
-                console.log(updatedMeals);
                 const result = await mealsCollection.updateMany(
                     { userEmail: updatedMeals[0].userEmail }, 
                     { $set: { meals: updatedMeals } } 
@@ -214,7 +250,6 @@ async function run() {
         app.get('/meals/search', async (req, res) => {
             try {
                 const searchQuery = req.query.q; 
-                console.log(searchQuery);
                 const results = await mealsCollection
                     .find({
                         $text: { $search: searchQuery } 
@@ -223,7 +258,6 @@ async function run() {
 
                 res.json(results); 
             } catch (error) {
-                console.error("Error during search:", error);
                 res.status(500).json({ message: "Internal server error" });
             }
         });
@@ -235,8 +269,6 @@ async function run() {
             const user = req.body;
 
             const token = jwt.sign(user, process.env.JWT_TOKEN_SECRET_KEY, { expiresIn: '5h' });
-
-            console.log("in app post jwt", req?.cookies?.token);
 
             res
                 .cookie('token', token, {
@@ -271,10 +303,7 @@ async function run() {
 
         app.post('/create-payment-intent', async (req, res) => {
             const { amount } = req.body;
-            console.log('Received amount:', amount);
-
             if (!amount) {
-                console.log('No amount provided');
                 return res.status(400).json({
                     success: false,
                     error: 'Amount is required in the request body.',
@@ -289,7 +318,6 @@ async function run() {
                 });
 
                 const clientSecret = paymentIntent.client_secret;
-                console.log('PaymentIntent created:', clientSecret);
 
                 res.json({
                     success: true,
@@ -297,7 +325,6 @@ async function run() {
                     clientSecret: clientSecret,
                 });
             } catch (error) {
-                console.error('Error creating PaymentIntent:', error.message);
                 res.status(500).json({
                     success: false,
                     error: error.message,
@@ -308,7 +335,6 @@ async function run() {
 
         app.get('/payments/:email', verifyToken, async (req, res) => {
             const userEmail = req.params.email;
-            console.log("userEmail from payment", userEmail);
 
             if (req?.tokenOwnerEmail !== userEmail) {
                 return res.status(403).json({ message: "Forbidden Access: Email not matched" });
@@ -326,7 +352,6 @@ async function run() {
                     });
                 }
             } catch (error) {
-                console.error('Error fetching payments:', error);
                 res.status(500).send({ message: 'Failed to fetch payments', error: error.message });
             }
         });
@@ -377,7 +402,6 @@ async function run() {
                     },
                 });
             } catch (error) {
-                console.error("Error fetching meals:", error);
                 res.status(500).json({
                     success: false,
                     message: "An error occurred while fetching meals.",
@@ -386,7 +410,7 @@ async function run() {
             }
         });
 
-        app.get('/mealssorted', verifyToken, verifyAdmin, async (req, res) => {
+        app.get('/mealssorted', async (req, res) => {
             try {
                 const { sort } = req.query;
                 const page = parseInt(req.query.page);
@@ -407,7 +431,6 @@ async function run() {
 
                 res.status(200).json(meals);
             } catch (error) {
-                console.error('Error fetching sorted meals:', error);
                 res.status(500).json({ error: 'Failed to fetch sorted meals' });
             }
         });
@@ -443,7 +466,6 @@ async function run() {
                     totalCount,
                 });
             } catch (error) {
-                console.error("Error fetching served meals:", error);
                 res.status(500).send({ error: "Failed to fetch meals." });
             }
         });
@@ -452,8 +474,6 @@ async function run() {
         app.delete('/meals/:mealId/reviews', async (req, res) => {
             const { mealId } = req.params;
             const { userEmail } = req.body;  
-
-            console.log(mealId, userEmail);
 
             try {
                 const mealObjectId = new ObjectId(mealId);
@@ -493,7 +513,6 @@ async function run() {
                 }
 
             } catch (error) {
-                console.error(error);
                 return res.status(500).json({ message: 'Server error' });
             }
         });
@@ -546,7 +565,6 @@ async function run() {
                 res.status(200).json({ message: 'Meal liked successfully', reaction: updatedReaction });
 
             } catch (error) {
-                console.error(error);
                 res.status(500).json({ message: 'Server error' });
             }
         });
@@ -556,7 +574,6 @@ async function run() {
             try {
                 const adminEmail = req.query.adminEmail;
 
-                console.log("current admin email", req?.tokenOwnerEmail, adminEmail);
                 if (req?.tokenOwnerEmail !== adminEmail) {
                     return res.status(403).json({ message: "Forbidden Access: Email not matched" });
                 }
@@ -569,11 +586,9 @@ async function run() {
 
                 res.status(200).json({ mealCount });
             } catch (error) {
-                console.error('Error fetching meal count:', error);
                 res.status(500).json({ error: 'Failed to fetch meal count' });
             }
         });
-
 
         app.delete('/mealssorted/:id', async (req, res) => {
             const id = req.params.id;
@@ -582,7 +597,6 @@ async function run() {
                 const result = await mealsCollection.deleteOne(query);
                 res.send(result);
             } catch (error) {
-                console.error("Error deleting the meal:", error);
                 res.status(500).send({ message: "Failed to remove this meal" });
             }
         });
@@ -590,13 +604,11 @@ async function run() {
 
         app.delete('/requestedmeals/:id', verifyToken, async (req, res) => {
             const id = req.params.id;
-            console.log(id);
             try {
                 const query = { _id: new ObjectId(id) }
                 const result = await requestedMealsCollection.deleteOne(query);
                 res.send(result);
             } catch (error) {
-                console.error("Error deleting the meal:", error);
                 res.status(500).send({ message: "Failed to remove this meal" });
             }
         });
@@ -626,14 +638,12 @@ async function run() {
 
         app.post('/meals', verifyToken, verifyAdmin, async (req, res) => {
             const meal = req.body;
-            console.log(meal);
             const result = await mealsCollection.insertOne(meal);
             res.send(result);
         })
 
         app.post('/package-payment-data', async (req, res) => {
             const paymentData = req.body;
-            console.log(paymentData);
             const result = await paymentCollection.insertOne(paymentData);
             res.send(result);
         })
@@ -641,8 +651,6 @@ async function run() {
 
         app.patch('/update-badge', async (req, res) => {
             const paymentData = req.body;
-
-            console.log(paymentData);
 
             const { userEmail, packageName } = paymentData;
 
@@ -665,7 +673,6 @@ async function run() {
             );
 
             if (result.modifiedCount > 0) {
-                console.log("successfully updated");
                 res.status(200).json({ success: true, message: 'Badge updated successfully.' });
             } else {
                 res.status(404).json({ success: false, message: 'User not found.' });
@@ -676,33 +683,27 @@ async function run() {
 
         app.post('/upcomingmeals', async (req, res) => {
             const meal = req.body;
-            console.log(meal);
             const result = await upcomingMealsCollection.insertOne(meal);
             res.send(result);
         })
 
         app.post('/publish-meal/:id', verifyToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
-            console.log('Publish meal API hit, ID:', id); 
 
             try {
                 const mealToPublish = await upcomingMealsCollection.findOne({ _id: new ObjectId(id) });
                 if (!mealToPublish) {
-                    console.error('Meal not found'); 
                     return res.status(404).send({ message: 'Meal not found' });
                 }
 
                 const result = await mealsCollection.insertOne(mealToPublish);
                 if (result.insertedId) {
                     await upcomingMealsCollection.deleteOne({ _id: new ObjectId(id) });
-                    console.log('Meal published successfully'); 
                     res.send({ message: 'Meal published successfully' });
                 } else {
-                    console.error('Failed to publish meal'); 
                     res.status(500).send({ message: 'Failed to publish the meal' });
                 }
             } catch (error) {
-                console.error('Error during publish meal:', error); 
                 res.status(500).send({ message: 'Internal Server Error' });
             }
         });
@@ -721,7 +722,6 @@ async function run() {
 
                 res.send(result);
             } catch (error) {
-                console.error("Error fetching upcoming meals:", error);
                 res.status(500).send({ error: "Failed to fetch meals" });
             }
         });
@@ -738,7 +738,6 @@ async function run() {
                     insertedCount: result.insertedCount,
                 });
             } catch (error) {
-                console.error('Error inserting meals:', error);
                 res.status(500).json({ error: 'Failed to insert meals' });
             }
         });
@@ -771,17 +770,16 @@ async function run() {
 
                 res.status(200).json(meals);
             } catch (error) {
-                console.error('Error fetching requested meals:', error);
                 res.status(500).json({ error: 'Failed to fetch requested meals' });
             }
         });
 
-        app.get('/requestedmeals/:email', verifyToken, async (req, res) => {
+        app.get('/requestedmeals/:email', async (req, res) => {
             const userEmail = req.params.email;
 
-            if (req?.tokenOwnerEmail !== userEmail) {
-                return res.status(403).json({ message: "Forbidden Access: Email not matched" });
-            }
+            // if (req?.tokenOwnerEmail !== userEmail) {
+            //     return res.status(403).json({ message: "Forbidden Access: Email not matched" });
+            // }
 
             try {
                 const requestedMeals = await requestedMealsCollection.find({ userEmail }).toArray();
@@ -795,7 +793,6 @@ async function run() {
                     });
                 }
             } catch (error) {
-                console.error('Error fetching requested meals:', error);
                 res.status(500).send({ message: 'Failed to fetch requested meals', error: error.message });
             }
         });
@@ -804,9 +801,6 @@ async function run() {
         app.post('/requestedmeals', async (req, res) => {
             const meal = req.body;
             const { userEmail, _id } = req.body;
-            console.log(meal);
-
-            console.log(userEmail, _id);
 
             const existingRequest = await requestedMealsCollection.findOne({ userEmail, _id });
             if (existingRequest) {
@@ -833,7 +827,6 @@ async function run() {
                 const result = await userCollection.find(query).toArray();
                 res.send(result);
             } catch (error) {
-                console.error('Error fetching users:', error);
                 res.status(500).send({ message: 'Failed to fetch users', error: error.message });
             }
         });
@@ -861,15 +854,12 @@ async function run() {
 
         app.get('/meal/:id', async (req, res) => {
             const id = req.params.id;
-            console.log('Received ID:', id); 
 
             try {
                 const query = { _id: new ObjectId(id) };
                 const result = await mealsCollection.findOne(query);
-                console.log('Query Result:', result); 
                 res.send(result);
             } catch (error) {
-                console.error('Error fetching meal:', error);
                 res.status(500).send({ error: 'Error fetching meal' });
             }
         });
@@ -891,7 +881,6 @@ async function run() {
 
             const query = { email: email };
             const user = await userCollection.findOne(query);
-            console.log(user?.badge);
             let premiumMember = false;
             if (user?.badge === "Gold" || user?.badge === "Silver" || user?.badge === "Platinum") {
                 premiumMember = true;
@@ -927,7 +916,6 @@ async function run() {
                 res.status(200).json({ message: 'Meal liked successfully', reaction: updatedReaction });
 
             } catch (error) {
-                console.error(error);
                 res.status(500).json({ message: 'Server error' });
             }
         });
@@ -937,8 +925,6 @@ async function run() {
         app.put('/api/update-review/:mealId', async (req, res) => {
             const mealId = req.params.mealId;  
             const { review, userEmail, name } = req.body; 
-
-            console.log(mealId, review);
 
             if (!review) {
                 return res.status(400).json({ error: 'Review text is required' });
@@ -963,14 +949,12 @@ async function run() {
 
         });
 
-
-
-        app.get('/reviews/:email', verifyToken, async (req, res) => {
+        app.get('/reviews/:email', async (req, res) => {
             const userEmail = req.params.email;
 
-            if (req?.tokenOwnerEmail !== userEmail) {
-                return res.status(403).json({ message: "Forbidden Access: Email not matched" });
-            }
+            // if (req?.tokenOwnerEmail !== userEmail) {
+            //     return res.status(403).json({ message: "Forbidden Access: Email not matched" });
+            // }
 
             try {
                 const meals = await mealsCollection.find({}).toArray();
@@ -995,7 +979,6 @@ async function run() {
                     res.send([]);
                 }
             } catch (error) {
-                console.error('Error fetching reviews:', error);
                 res.status(500).json({ message: 'Failed to fetch reviews', error: error.message });
             }
         });
